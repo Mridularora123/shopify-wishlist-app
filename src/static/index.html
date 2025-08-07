@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Shopify Wishlist App</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background-color: #f6f6f7;
+            color: #202223;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        .header {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        
+        .header h1 {
+            color: #202223;
+            font-size: 24px;
+            font-weight: 600;
+        }
+        
+        .header p {
+            color: #6d7175;
+            margin-top: 8px;
+        }
+        
+        .card {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        
+        .card-header {
+            padding: 20px;
+            border-bottom: 1px solid #e1e3e5;
+        }
+        
+        .card-header h2 {
+            font-size: 18px;
+            font-weight: 600;
+            color: #202223;
+        }
+        
+        .card-content {
+            padding: 20px;
+        }
+        
+        .setup-steps {
+            list-style: none;
+            counter-reset: step-counter;
+        }
+        
+        .setup-steps li {
+            counter-increment: step-counter;
+            margin-bottom: 20px;
+            padding-left: 40px;
+            position: relative;
+        }
+        
+        .setup-steps li::before {
+            content: counter(step-counter);
+            position: absolute;
+            left: 0;
+            top: 0;
+            background: #008060;
+            color: white;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        
+        .code-block {
+            background: #f6f6f7;
+            border: 1px solid #e1e3e5;
+            border-radius: 4px;
+            padding: 12px;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 13px;
+            margin: 10px 0;
+            overflow-x: auto;
+        }
+        
+        .btn {
+            background: #008060;
+            color: white;
+            border: none;
+            padding: 12px 20px;
+            border-radius: 4px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-block;
+        }
+        
+        .btn:hover {
+            background: #006b4f;
+        }
+        
+        .btn-secondary {
+            background: #f6f6f7;
+            color: #202223;
+            border: 1px solid #c9cccf;
+        }
+        
+        .btn-secondary:hover {
+            background: #f1f2f3;
+        }
+        
+        .alert {
+            padding: 12px 16px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        
+        .alert-info {
+            background: #e3f2fd;
+            border: 1px solid #90caf9;
+            color: #1565c0;
+        }
+        
+        .alert-warning {
+            background: #fff3e0;
+            border: 1px solid #ffcc02;
+            color: #e65100;
+        }
+        
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }
+        
+        .feature-item {
+            padding: 16px;
+            border: 1px solid #e1e3e5;
+            border-radius: 4px;
+        }
+        
+        .feature-item h3 {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: #202223;
+        }
+        
+        .feature-item p {
+            color: #6d7175;
+            font-size: 14px;
+        }
+        
+        .status-indicator {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+        
+        .status-success {
+            background: #008060;
+        }
+        
+        .status-warning {
+            background: #ffcc02;
+        }
+        
+        .status-error {
+            background: #d72c0d;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Shopify Wishlist App</h1>
+            <p>A complete wishlist solution for your Shopify store</p>
+        </div>
+        
+        <div class="card">
+            <div class="card-header">
+                <h2>App Status</h2>
+            </div>
+            <div class="card-content">
+                <div id="app-status">
+                    <p><span class="status-indicator status-warning"></span>App not configured</p>
+                    <p style="margin-top: 10px; color: #6d7175;">Please follow the setup instructions below to configure your app.</p>
+                </div>
+            </div>
+        </div>
+        
+        <div class="card">
+            <div class="card-header">
+                <h2>Setup Instructions</h2>
+            </div>
+            <div class="card-content">
+                <ol class="setup-steps">
+                    <li>
+                        <strong>Create a Private App in Shopify</strong>
+                        <p>Go to your Shopify admin → Settings → Apps and sales channels → Develop apps → Create an app</p>
+                    </li>
+                    <li>
+                        <strong>Configure App Permissions</strong>
+                        <p>Set the following permissions for your private app:</p>
+                        <div class="code-block">
+Admin API access scopes:
+• read_products
+• read_customers  
+• write_customers
+• read_customer_metafields
+• write_customer_metafields</div>
+                    </li>
+                    <li>
+                        <strong>Set Environment Variables</strong>
+                        <p>Add these environment variables to your app:</p>
+                        <div class="code-block">
+SHOPIFY_API_KEY=your_api_key_here
+SHOPIFY_API_SECRET=your_api_secret_here
+SHOPIFY_REDIRECT_URI=https://your-app-domain.com/api/auth/callback</div>
+                    </li>
+                    <li>
+                        <strong>Configure App Proxy (Optional)</strong>
+                        <p>For frontend integration, set up an app proxy in your Shopify app settings:</p>
+                        <div class="code-block">
+Subpath prefix: wishlist
+Subpath: proxy
+URL: https://your-app-domain.com/apps/wishlist/proxy</div>
+                    </li>
+                    <li>
+                        <strong>Install the App</strong>
+                        <p>Visit the installation URL to authorize your app:</p>
+                        <div class="code-block">https://your-app-domain.com/api/auth?shop=your-shop-name</div>
+                    </li>
+                </ol>
+            </div>
+        </div>
+        
+        <div class="card">
+            <div class="card-header">
+                <h2>Features</h2>
+            </div>
+            <div class="card-content">
+                <div class="feature-grid">
+                    <div class="feature-item">
+                        <h3>Customer Wishlists</h3>
+                        <p>Allow customers to save products for later purchase. Supports multiple items per customer.</p>
+                    </div>
+                    <div class="feature-item">
+                        <h3>REST API</h3>
+                        <p>Complete REST API for managing wishlist items programmatically.</p>
+                    </div>
+                    <div class="feature-item">
+                        <h3>Frontend Widget</h3>
+                        <p>JavaScript widget that automatically adds wishlist buttons to your store.</p>
+                    </div>
+                    <div class="feature-item">
+                        <h3>App Proxy Support</h3>
+                        <p>Secure integration with your storefront using Shopify's app proxy feature.</p>
+                    </div>
+                    <div class="feature-item">
+                        <h3>Customer Authentication</h3>
+                        <p>Integrates with Shopify's customer login system for secure wishlist management.</p>
+                    </div>
+                    <div class="feature-item">
+                        <h3>Product Data Enrichment</h3>
+                        <p>Automatically fetches product details, images, and pricing for wishlist items.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="card">
+            <div class="card-header">
+                <h2>API Documentation</h2>
+            </div>
+            <div class="card-content">
+                <div class="alert alert-info">
+                    <strong>Base URL:</strong> https://your-app-domain.com/api
+                </div>
+                
+                <h3 style="margin: 20px 0 10px 0;">Endpoints</h3>
+                
+                <div style="margin-bottom: 20px;">
+                    <strong>GET /wishlist</strong>
+                    <p>Get wishlist items for a customer</p>
+                    <div class="code-block">
+Parameters:
+- customer_id: Shopify customer ID
+- shop_domain: Store domain (e.g., mystore.myshopify.com)</div>
+                </div>
+                
+                <div style="margin-bottom: 20px;">
+                    <strong>POST /wishlist</strong>
+                    <p>Add item to wishlist</p>
+                    <div class="code-block">
+Body:
+{
+  "customer_id": "123456789",
+  "shop_domain": "mystore.myshopify.com",
+  "product_id": "987654321",
+  "variant_id": "111222333" // optional
+}</div>
+                </div>
+                
+                <div style="margin-bottom: 20px;">
+                    <strong>DELETE /wishlist/{item_id}</strong>
+                    <p>Remove item from wishlist</p>
+                    <div class="code-block">
+Parameters:
+- customer_id: Shopify customer ID
+- shop_domain: Store domain</div>
+                </div>
+                
+                <div style="margin-bottom: 20px;">
+                    <strong>GET /wishlist/count</strong>
+                    <p>Get count of items in wishlist</p>
+                    <div class="code-block">
+Parameters:
+- customer_id: Shopify customer ID
+- shop_domain: Store domain</div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="card">
+            <div class="card-header">
+                <h2>Frontend Integration</h2>
+            </div>
+            <div class="card-content">
+                <p>Add this script tag to your theme's layout file (theme.liquid) before the closing &lt;/body&gt; tag:</p>
+                <div class="code-block">
+&lt;script src="https://your-app-domain.com/apps/wishlist/proxy/wishlist.js?shop={{ shop.domain }}"&gt;&lt;/script&gt;</div>
+                
+                <div class="alert alert-warning">
+                    <strong>Note:</strong> Make sure to configure the app proxy in your Shopify app settings for this to work.
+                </div>
+                
+                <h3 style="margin: 20px 0 10px 0;">Manual Integration</h3>
+                <p>You can also manually add wishlist functionality using JavaScript:</p>
+                <div class="code-block">
+// Add to wishlist
+WishlistWidget.addToWishlist('product_id_here');
+
+// Remove from wishlist  
+WishlistWidget.removeFromWishlist('product_id_here');
+
+// Refresh wishlist buttons
+WishlistWidget.refreshButtons();
+
+// Update wishlist count
+WishlistWidget.updateCount();</div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Simple status check (you can enhance this)
+        document.addEventListener('DOMContentLoaded', function() {
+            // This is a placeholder - in a real app, you'd check actual configuration
+            const statusElement = document.getElementById('app-status');
+            
+            // You could make an API call here to check if the app is properly configured
+            // For now, we'll just show the default state
+        });
+    </script>
+</body>
+</html>
+
