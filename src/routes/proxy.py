@@ -4,6 +4,9 @@ from src.utils.shopify_api import ShopifyAPI
 import hmac
 import hashlib
 import urllib.parse
+import os
+
+SHOPIFY_SHARED_SECRET = os.getenv("SHOPIFY_API_SECRET")
 
 proxy_bp = Blueprint('proxy', __name__)
 
@@ -402,3 +405,24 @@ def proxy_wishlist_count():
 @proxy_bp.route('/proxy', methods=['GET'])
 def shopify_proxy_root():
     return jsonify({"wishlist": []})
+
+@proxy_bp.route('/', methods=['GET'])
+def shopify_proxy_root():
+    try:
+        params = request.args.to_dict(flat=True)
+        hmac_header = params.pop('hmac', None)
+
+        sorted_params = "&".join([f"{k}={v}" for k, v in sorted(params.items())])
+        calculated_hmac = hmac.new(
+            SHOPIFY_SHARED_SECRET.encode('utf-8'),
+            sorted_params.encode('utf-8'),
+            hashlib.sha256
+        ).hexdigest()
+
+        if not hmac.compare_digest(calculated_hmac, hmac_header):
+            return jsonify({'error': 'Unauthorized'}), 401
+
+        return jsonify({"wishlist": []})
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
