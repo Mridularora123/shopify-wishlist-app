@@ -399,3 +399,6 @@ def proxy_wishlist_count():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@proxy_bp.route('/proxy', methods=['GET'])
+def shopify_proxy_root():
+    return jsonify({"wishlist": []})
