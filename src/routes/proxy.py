@@ -5,6 +5,18 @@ from src.utils.shopify_api import ShopifyAPI  # keep if used elsewhere
 
 proxy_bp = Blueprint('proxy', __name__)
 
+def _shop_from_request():
+    # Accept ?shop=..., ?shop_domain=..., or proxy header
+    return (
+        request.args.get('shop')
+        or request.args.get('shop_domain')
+        or request.headers.get('X-Shopify-Shop-Domain')
+    )
+
+def verify_proxy_request():
+    # Minimal check; add HMAC later if you want
+    return bool(_shop_from_request())
+
 # ---------- Lightweight proxy verification while we integrate ----------
 def verify_proxy_request(params):
     # App Proxy always includes ?shop=...; keep simple during dev
@@ -19,10 +31,10 @@ def wishlist_js():
     Storefront loads:  /apps/wishlist/wishlist.js?shop=xxxx
     Shopify forwards to: <your app url>/apps/wishlist/proxy/wishlist.js?shop=xxxx
     """
-    if not verify_proxy_request(request.args):
+    if not verify_proxy_request():
         return "Unauthorized", 401
 
-    shop = request.args.get('shop', '')
+    shop = _shop_from_request() or ''
 
     JS = r"""
 (function () {
@@ -215,10 +227,10 @@ def proxy_wishlist():
     Storefront calls /apps/wishlist/wishlist (GET/POST/DELETE)
     App proxy forwards to this route.
     """
-    if not verify_proxy_request(request.args):
+    if not verify_proxy_request():
         return jsonify({'success': False, 'error': 'Unauthorized'}), 401
 
-    shop = request.args.get('shop')
+    shop = _shop_from_request()
     if not shop:
         return jsonify({'success': False, 'error': 'Missing shop'}), 400
 
@@ -316,10 +328,10 @@ def remove_from_wishlist_proxy(shop):
 
 @proxy_bp.route('/proxy/wishlist/count', methods=['GET'])
 def proxy_wishlist_count():
-    if not verify_proxy_request(request.args):
+    if not verify_proxy_request():
         return jsonify({'success': False, 'error': 'Unauthorized'}), 401
 
-    shop = request.args.get('shop')
+    shop = _shop_from_request()
     customer_id = request.args.get('customer_id')
     if not shop or not customer_id:
         return jsonify({'success': False, 'error': 'shop and customer_id are required'}), 400
