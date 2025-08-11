@@ -5,8 +5,12 @@ from src.utils.shopify_api import ShopifyAPI  # keep if used elsewhere
 
 proxy_bp = Blueprint('proxy', __name__)
 
+# ---------------- helpers ----------------
+
 def _shop_from_request():
-    # Accept ?shop=..., ?shop_domain=..., or proxy header
+    """
+    Accept ?shop=..., ?shop_domain=..., or the proxy header.
+    """
     return (
         request.args.get('shop')
         or request.args.get('shop_domain')
@@ -14,31 +18,27 @@ def _shop_from_request():
     )
 
 def verify_proxy_request():
-    # Minimal check; add HMAC later if you want
+    """
+    Minimal dev check. Keep stricter HMAC later if desired.
+    """
     return bool(_shop_from_request())
 
-# ---------- Lightweight proxy verification while we integrate ----------
-def verify_proxy_request(params):
-    # App Proxy always includes ?shop=...; keep simple during dev
-    return 'shop' in params
 
+# ==================== Widget (NEVER 401 here) ====================
 
-# ========================= WIDGET: /apps/wishlist/wishlist.js =========================
 @proxy_bp.route('/proxy/wishlist.js', methods=['GET'])
 def wishlist_js():
     """
     JavaScript widget served via Shopify App Proxy.
     Storefront loads:  /apps/wishlist/wishlist.js?shop=xxxx
-    Shopify forwards to: <your app url>/apps/wishlist/proxy/wishlist.js?shop=xxxx
+    Shopify forwards:  <app>/apps/wishlist/proxy/wishlist.js?shop=xxxx
     """
-    if not verify_proxy_request():
-        return "Unauthorized", 401
-
+    # IMPORTANT: do NOT block the JS file; let it bootstrap from theme globals.
     shop = _shop_from_request() or ''
 
     JS = r"""
 (function () {
-  // --- Config (read any pre-set global, then publish) -----------------
+  // --- Config (read any pre-set global, then publish) -------------
   var PRE = (window.WISHLIST_CONFIG || {});
   var CANDIDATE_ID =
       PRE.customerId
@@ -46,15 +46,15 @@ def wishlist_js():
    || ((window.Shopify && window.Shopify.customer) ? window.Shopify.customer.id : null);
 
   var WISHLIST_CONFIG = {
-    shop: PRE.shop || "__SHOP__",
-    apiEndpoint: PRE.apiEndpoint || "/apps/wishlist",  // storefront base
+    shop: PRE.shop || "__SHOP__" || (window.Shopify && window.Shopify.shop) || "",
+    apiEndpoint: PRE.apiEndpoint || "/apps/wishlist",
     customerId: CANDIDATE_ID,
     isLoggedIn: !!CANDIDATE_ID
   };
-  window.WISHLIST_CONFIG = WISHLIST_CONFIG; // make global for theme overrides
+  window.WISHLIST_CONFIG = WISHLIST_CONFIG;
   console.log("[wishlist] boot config:", WISHLIST_CONFIG);
 
-  // Initialize after DOM ready to allow theme override to run too
+  // Initialize after DOM ready (so theme overrides can run)
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", initWishlist);
   } else {
@@ -67,7 +67,6 @@ def wishlist_js():
       WISHLIST_CONFIG.customerId = window.Shopify.customer.id;
       WISHLIST_CONFIG.isLoggedIn = true;
     }
-    // Guard
     if (!WISHLIST_CONFIG.shop) {
       console.warn("[wishlist] missing shop");
     }
@@ -76,9 +75,19 @@ def wishlist_js():
     updateWishlistCount();
   }
 
-  // ---------- Button injection (PDP forms) ----------
+  // ---------- Button injection (Dawn PDP) ----------
   function addWishlistButtons() {
-    var productForms = document.querySelectorAll('form[action*="/cart/add"]');
+    // Catch both classic form and product-form wrapper
+    var productForms = document.querySelectorAll(
+      'product-form form[action*="/cart/add"], form[action*="/cart/add"]'
+    );
+
+    if (!productForms.length) {
+      // Sections can render async; retry once
+      setTimeout(addWishlistButtons, 500);
+      return;
+    }
+
     productForms.forEach(function (form) {
       if (form.querySelector(".wishlist-btn")) return; // avoid duplicates
       var variantId = getVariantId(form);
@@ -97,7 +106,7 @@ def wishlist_js():
 
   function getVariantId(el) {
     var idInput = el.querySelector('input[name="id"]');
-    return idInput && idInput.value ? idInput.value : null; // PDP: this is VARIANT id
+    return idInput && idInput.value ? idInput.value : null; // PDP variant id
   }
 
   function createWishlistButton(variantId) {
@@ -125,7 +134,7 @@ def wishlist_js():
     var url = WISHLIST_CONFIG.apiEndpoint + "/wishlist";
 
     var payload = {
-      customer_id: String(WISHLIST_CONFIG.customerId),   // << REQUIRED
+      customer_id: String(WISHLIST_CONFIG.customerId),
       shop_domain: WISHLIST_CONFIG.shop,
       variant_id: String(variantId)
     };
@@ -135,7 +144,7 @@ def wishlist_js():
 
     fetch(url, {
       method: method,
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
       body: JSON.stringify(payload)
     })
       .then(function (r) { return r.json(); })
@@ -160,12 +169,11 @@ def wishlist_js():
       + "?customer_id=" + encodeURIComponent(WISHLIST_CONFIG.customerId)
       + "&shop_domain=" + encodeURIComponent(WISHLIST_CONFIG.shop);
 
-    fetch(url)
+    fetch(url, { headers: { "Accept": "application/json" } })
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (data && data.success) {
           var inList = (data.wishlist || []).some(function (it) {
-            // accept either field coming back
             return String(it.variant_id || it.product_id) === String(variantId);
           });
           updateButtonState(button, inList);
@@ -198,7 +206,7 @@ def wishlist_js():
       + "?customer_id=" + encodeURIComponent(WISHLIST_CONFIG.customerId)
       + "&shop_domain=" + encodeURIComponent(WISHLIST_CONFIG.shop);
 
-    fetch(url)
+    fetch(url, { headers: { "Accept": "application/json" } })
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (data && data.success) {
@@ -217,10 +225,14 @@ def wishlist_js():
 })();
 """
     js_code = JS.replace("__SHOP__", shop)
-    return js_code, 200, {"Content-Type": "application/javascript"}
+    return js_code, 200, {
+        "Content-Type": "application/javascript",
+        "Cache-Control": "no-store",
+    }
 
 
-# ========================= API via App Proxy =========================
+# ==================== API via App Proxy (protected) ====================
+
 @proxy_bp.route('/proxy/wishlist', methods=['GET', 'POST', 'DELETE'])
 def proxy_wishlist():
     """
@@ -275,7 +287,7 @@ def add_to_wishlist_proxy(shop):
         return jsonify({'success': False, 'error': 'customer_id and product_id or variant_id are required'}), 400
 
     try:
-        # Prevent duplicates (match by whichever identifiers were provided)
+        # Prevent duplicates
         q = Wishlist.query.filter_by(customer_id=str(customer_id), shop_domain=shop)
         if product_id:
             q = q.filter_by(product_id=str(product_id))
