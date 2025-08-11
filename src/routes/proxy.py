@@ -28,7 +28,7 @@ def wishlist_js():
     js_code = f"""
 (function() {{
   // --- Config -------------------------------------------------------
-  var PRE = (window.WISHLIST_CONFIG || {});
+  var PRE = (window.WISHLIST_CONFIG || {{}});
   var WISHLIST_CONFIG = {{
     shop: PRE.shop || '{shop}',
     // IMPORTANT: Storefront calls /apps/wishlist/* (Shopify forwards to /proxy/* here)
