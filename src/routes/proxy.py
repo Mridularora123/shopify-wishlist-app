@@ -1,44 +1,53 @@
 # src/routes/proxy.py
 from flask import Blueprint, request, jsonify
 from src.models.wishlist import db, Wishlist, WishlistSettings
-from src.utils.shopify_api import ShopifyAPI  # keep if used elsewhere
+from src.utils.shopify_api import ShopifyAPI
 
 proxy_bp = Blueprint('proxy', __name__)
 
-# ---------------- helpers ----------------
+# ─────────────────────────────
+# Helpers
+# ─────────────────────────────
+
+def _json_body():
+    return request.get_json(silent=True) or {}
 
 def _shop_from_request():
     """
-    Accept ?shop=..., ?shop_domain=..., or the proxy header.
+    Accept the shop from anywhere Shopify/the theme might send it:
+    - App proxy query (?shop=…)
+    - App proxy header (X-Shopify-Shop-Domain)
+    - Your theme/query usage (?shop_domain=…)
+    - JSON request body ({"shop_domain": …})
     """
     return (
         request.args.get('shop')
-        or request.args.get('shop_domain')
         or request.headers.get('X-Shopify-Shop-Domain')
+        or request.args.get('shop_domain')
+        or _json_body().get('shop_domain')
     )
 
+def _json_error(msg, code=400):
+    return jsonify({'success': False, 'error': msg}), code
+
 def verify_proxy_request():
-    """
-    Minimal dev check. Keep stricter HMAC later if desired.
-    """
-    return bool(_shop_from_request())
+    # Keep permissive during integration to avoid 401s while wiring.
+    # Tighten later with HMAC if desired.
+    return True
 
 
-# ==================== Widget (NEVER 401 here) ====================
+# ─────────────────────────────
+# Widget JS (served via proxy) — NEVER block
+# Storefront loads:  /apps/wishlist/wishlist.js?shop=xxxx
+# Shopify forwards:  <app>/apps/wishlist/proxy/wishlist.js?shop=xxxx
+# ─────────────────────────────
 
 @proxy_bp.route('/proxy/wishlist.js', methods=['GET'])
 def wishlist_js():
-    """
-    JavaScript widget served via Shopify App Proxy.
-    Storefront loads:  /apps/wishlist/wishlist.js?shop=xxxx
-    Shopify forwards:  <app>/apps/wishlist/proxy/wishlist.js?shop=xxxx
-    """
-    # IMPORTANT: do NOT block the JS file; let it bootstrap from theme globals.
-    shop = _shop_from_request() or ''
-
+    # Do NOT 401 here; let the widget bootstrap from theme globals.
     JS = r"""
 (function () {
-  // --- Config (read any pre-set global, then publish) -------------
+  // --- Config (take any preset, then publish) -------------------------
   var PRE = (window.WISHLIST_CONFIG || {});
   var CANDIDATE_ID =
       PRE.customerId
@@ -46,15 +55,15 @@ def wishlist_js():
    || ((window.Shopify && window.Shopify.customer) ? window.Shopify.customer.id : null);
 
   var WISHLIST_CONFIG = {
-    shop: PRE.shop || "__SHOP__" || (window.Shopify && window.Shopify.shop) || "",
-    apiEndpoint: PRE.apiEndpoint || "/apps/wishlist",
+    shop: PRE.shop || (window.Shopify && window.Shopify.shop ? window.Shopify.shop : ""),
+    apiEndpoint: PRE.apiEndpoint || "/apps/wishlist",   // storefront base (Shopify proxies to /proxy/*)
     customerId: CANDIDATE_ID,
     isLoggedIn: !!CANDIDATE_ID
   };
   window.WISHLIST_CONFIG = WISHLIST_CONFIG;
   console.log("[wishlist] boot config:", WISHLIST_CONFIG);
 
-  // Initialize after DOM ready (so theme overrides can run)
+  // Init after DOM ready (let theme overrides run first)
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", initWishlist);
   } else {
@@ -62,13 +71,9 @@ def wishlist_js():
   }
 
   function initWishlist() {
-    // Re-sync from Shopify globals if available
     if (window.Shopify && window.Shopify.customer) {
       WISHLIST_CONFIG.customerId = window.Shopify.customer.id;
       WISHLIST_CONFIG.isLoggedIn = true;
-    }
-    if (!WISHLIST_CONFIG.shop) {
-      console.warn("[wishlist] missing shop");
     }
 
     addWishlistButtons();
@@ -77,36 +82,31 @@ def wishlist_js():
 
   // ---------- Button injection (Dawn PDP) ----------
   function addWishlistButtons() {
-    // Catch both classic form and product-form wrapper
-    var productForms = document.querySelectorAll(
-      'product-form form[action*="/cart/add"], form[action*="/cart/add"]'
-    );
-
+    // Handle both <product-form> and plain <form> on Dawn
+    var productForms = document.querySelectorAll('product-form form[action*="/cart/add"], form[action*="/cart/add"]');
     if (!productForms.length) {
       // Sections can render async; retry once
       setTimeout(addWishlistButtons, 500);
       return;
     }
-
     productForms.forEach(function (form) {
       if (form.querySelector(".wishlist-btn")) return; // avoid duplicates
       var variantId = getVariantId(form);
       if (!variantId) return;
       var btn = createWishlistButton(variantId);
-      var addToCartBtn = form.querySelector('button[type="submit"], .btn-cart, .add-to-cart');
-      if (addToCartBtn && addToCartBtn.parentNode) {
-        addToCartBtn.parentNode.insertBefore(btn, addToCartBtn.nextSibling);
+      var atc = form.querySelector('button[type="submit"], .btn-cart, .add-to-cart');
+      if (atc && atc.parentNode) {
+        atc.parentNode.insertBefore(btn, atc.nextSibling);
       } else {
         form.appendChild(btn);
       }
-      // Pre-check
       checkWishlistStatus(variantId, btn);
     });
   }
 
   function getVariantId(el) {
     var idInput = el.querySelector('input[name="id"]');
-    return idInput && idInput.value ? idInput.value : null; // PDP variant id
+    return idInput && idInput.value ? idInput.value : null; // PDP: variant id
   }
 
   function createWishlistButton(variantId) {
@@ -147,20 +147,20 @@ def wishlist_js():
       headers: { "Content-Type": "application/json", "Accept": "application/json" },
       body: JSON.stringify(payload)
     })
-      .then(function (r) { return r.json(); })
-      .then(function (data) {
-        if (data && data.success) {
-          updateButtonState(button, !isIn);
-          updateWishlistCount();
-        } else {
-          alert("Error: " + ((data && data.error) || "Unknown error"));
-        }
-      })
-      .catch(function (e) {
-        console.error("Wishlist error:", e);
-        alert("Error updating wishlist");
-      })
-      .finally(function () { button.disabled = false; });
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      if (data && data.success) {
+        updateButtonState(button, !isIn);
+        updateWishlistCount();
+      } else {
+        alert("Error: " + ((data && data.error) || "Unknown error"));
+      }
+    })
+    .catch(function (e) {
+      console.error("Wishlist error:", e);
+      alert("Error updating wishlist");
+    })
+    .finally(function () { button.disabled = false; });
   }
 
   function checkWishlistStatus(variantId, button) {
@@ -179,9 +179,7 @@ def wishlist_js():
           updateButtonState(button, inList);
         }
       })
-      .catch(function (e) {
-        console.warn("check status failed:", e);
-      });
+      .catch(function (e) { console.warn("check status failed:", e); });
   }
 
   function updateButtonState(button, inWishlist) {
@@ -218,84 +216,144 @@ def wishlist_js():
       .catch(function (e) { console.warn("count failed:", e); });
   }
 
-  // Expose a tiny API
+  // Small public API
   window.WishlistWidget = window.WishlistWidget || {};
   window.WishlistWidget.updateCount = updateWishlistCount;
   window.WishlistWidget.refreshButtons = addWishlistButtons;
 })();
 """
-    js_code = JS.replace("__SHOP__", shop)
-    return js_code, 200, {
-        "Content-Type": "application/javascript",
-        "Cache-Control": "no-store",
+    return JS, 200, {
+        'Content-Type': 'application/javascript',
+        'Cache-Control': 'no-store',
     }
 
 
-# ==================== API via App Proxy (protected) ====================
+# ─────────────────────────────
+# Proxy endpoints (Shopify forwards /apps/wishlist/* here)
+# ─────────────────────────────
 
 @proxy_bp.route('/proxy/wishlist', methods=['GET', 'POST', 'DELETE'])
 def proxy_wishlist():
-    """
-    Storefront calls /apps/wishlist/wishlist (GET/POST/DELETE)
-    App proxy forwards to this route.
-    """
     if not verify_proxy_request():
-        return jsonify({'success': False, 'error': 'Unauthorized'}), 401
-
-    shop = _shop_from_request()
-    if not shop:
-        return jsonify({'success': False, 'error': 'Missing shop'}), 400
-
-    # Ensure shop settings exist (token etc.)
-    shop_settings = WishlistSettings.query.filter_by(shop_domain=shop).first()
-    if not shop_settings:
-        return jsonify({'success': False, 'error': 'Shop not configured'}), 400
+        return _json_error('Unauthorized', 401)
 
     try:
+        shop = _shop_from_request()
+        if not shop:
+            return _json_error('missing shop', 400)
+
+        # Ensure the shop is configured
+        shop_settings = WishlistSettings.query.filter_by(shop_domain=shop).first()
+        if not shop_settings:
+            return _json_error('Shop not configured', 400)
+
         if request.method == 'GET':
-            return get_wishlist_proxy(shop)
+            return _get_wishlist(shop)
         elif request.method == 'POST':
-            return add_to_wishlist_proxy(shop)
+            return _add_to_wishlist(shop)
         elif request.method == 'DELETE':
-            return remove_from_wishlist_proxy(shop)
+            return _remove_from_wishlist(shop)
+
+        return _json_error('unsupported method', 405)
+
     except Exception as e:
-        return jsonify({'success': False, 'error': f'unhandled: {str(e)}'}), 500
+        # Always JSON, never HTML error pages
+        return _json_error(f'unhandled: {str(e)}', 500)
 
 
-def get_wishlist_proxy(shop):
-    customer_id = request.args.get('customer_id')
+@proxy_bp.route('/proxy/wishlist/count', methods=['GET'])
+def proxy_wishlist_count():
+    if not verify_proxy_request():
+        return _json_error('Unauthorized', 401)
+    try:
+        shop = _shop_from_request()
+        customer_id = request.args.get('customer_id') or _json_body().get('customer_id')
+        if not shop or not customer_id:
+            return _json_error('shop and customer_id are required', 400)
+
+        count = Wishlist.query.filter_by(
+            customer_id=str(customer_id),
+            shop_domain=shop
+        ).count()
+
+        return jsonify({'success': True, 'count': count})
+
+    except Exception as e:
+        return _json_error(f'count_failed: {str(e)}', 500)
+
+
+@proxy_bp.route('/proxy', methods=['GET'])
+def shopify_proxy_root():
+    return jsonify({"success": True, "wishlist": []})
+
+
+# ─────────────────────────────
+# Internal handlers (called by proxy routes above)
+# ─────────────────────────────
+
+def _get_wishlist(shop):
+    customer_id = request.args.get('customer_id') or _json_body().get('customer_id')
     if not customer_id:
-        return jsonify({'success': False, 'error': 'customer_id is required'}), 400
+        return _json_error('customer_id is required', 400)
 
     try:
-        items = Wishlist.query.filter_by(
+        wishlist_items = Wishlist.query.filter_by(
             customer_id=str(customer_id),
             shop_domain=shop
         ).all()
-        return jsonify({'success': True, 'wishlist': [i.to_dict() for i in items]})
+
+        # Optional enrichment with product data
+        enriched = []
+        shop_settings = WishlistSettings.query.filter_by(shop_domain=shop).first()
+        api = None
+        if shop_settings:
+            try:
+                api = ShopifyAPI(shop, shop_settings.access_token)
+            except Exception:
+                api = None
+
+        for item in wishlist_items:
+            d = item.to_dict()
+            if api and d.get('product_id'):
+                try:
+                    p = api.get_product(d['product_id'])
+                    if p:
+                        d['product'] = p
+                except Exception:
+                    pass
+            enriched.append(d)
+
+        return jsonify({'success': True, 'wishlist': enriched})
+
     except Exception as e:
-        return jsonify({'success': False, 'error': f'get_failed: {str(e)}'}), 500
+        return _json_error(f'get_failed: {str(e)}', 500)
 
 
-def add_to_wishlist_proxy(shop):
-    data = request.get_json(silent=True) or request.form or {}
+def _add_to_wishlist(shop):
+    data = _json_body() or request.form or {}
     customer_id = data.get('customer_id')
     product_id  = data.get('product_id')
     variant_id  = data.get('variant_id')
 
+    # Require customer_id and at least one of product_id or variant_id
     if not customer_id or not (product_id or variant_id):
-        return jsonify({'success': False, 'error': 'customer_id and product_id or variant_id are required'}), 400
+        return _json_error('customer_id and product_id or variant_id are required', 400)
 
     try:
-        # Prevent duplicates
+        # Prevent duplicates (match on provided keys)
         q = Wishlist.query.filter_by(customer_id=str(customer_id), shop_domain=shop)
         if product_id:
             q = q.filter_by(product_id=str(product_id))
+        else:
+            q = q.filter_by(product_id=None)
         if variant_id:
             q = q.filter_by(variant_id=str(variant_id))
+        else:
+            q = q.filter_by(variant_id=None)
+
         existing = q.first()
         if existing:
-            return jsonify({'success': False, 'error': 'Item already in wishlist'}), 409
+            return _json_error('Item already in wishlist', 409)
 
         item = Wishlist(
             customer_id=str(customer_id),
@@ -305,59 +363,43 @@ def add_to_wishlist_proxy(shop):
         )
         db.session.add(item)
         db.session.commit()
-        return jsonify({'success': True, 'message': 'Item added to wishlist'})
+
+        return jsonify({'success': True, 'message': 'Item added to wishlist', 'item': item.to_dict()})
+
     except Exception as e:
         db.session.rollback()
-        return jsonify({'success': False, 'error': f'add_failed: {str(e)}'}), 500
+        return _json_error(f'add_failed: {str(e)}', 500)
 
 
-def remove_from_wishlist_proxy(shop):
-    data = request.get_json(silent=True) or request.form or {}
+def _remove_from_wishlist(shop):
+    data = _json_body() or request.form or {}
     customer_id = data.get('customer_id')
     product_id  = data.get('product_id')
     variant_id  = data.get('variant_id')
 
+    # Require customer_id and at least one of product_id or variant_id
     if not customer_id or not (product_id or variant_id):
-        return jsonify({'success': False, 'error': 'customer_id and product_id or variant_id are required'}), 400
+        return _json_error('customer_id and product_id or variant_id are required', 400)
 
     try:
         q = Wishlist.query.filter_by(customer_id=str(customer_id), shop_domain=shop)
         if product_id:
             q = q.filter_by(product_id=str(product_id))
+        else:
+            q = q.filter_by(product_id=None)
         if variant_id:
             q = q.filter_by(variant_id=str(variant_id))
+        else:
+            q = q.filter_by(variant_id=None)
+
         item = q.first()
         if not item:
-            return jsonify({'success': False, 'error': 'Item not found'}), 404
+            return _json_error('Item not found', 404)
 
         db.session.delete(item)
         db.session.commit()
         return jsonify({'success': True, 'message': 'Item removed from wishlist'})
+
     except Exception as e:
         db.session.rollback()
-        return jsonify({'success': False, 'error': f'remove_failed: {str(e)}'}), 500
-
-
-@proxy_bp.route('/proxy/wishlist/count', methods=['GET'])
-def proxy_wishlist_count():
-    if not verify_proxy_request():
-        return jsonify({'success': False, 'error': 'Unauthorized'}), 401
-
-    shop = _shop_from_request()
-    customer_id = request.args.get('customer_id')
-    if not shop or not customer_id:
-        return jsonify({'success': False, 'error': 'shop and customer_id are required'}), 400
-
-    try:
-        count = Wishlist.query.filter_by(
-            customer_id=str(customer_id),
-            shop_domain=shop
-        ).count()
-        return jsonify({'success': True, 'count': count})
-    except Exception as e:
-        return jsonify({'success': False, 'error': f'count_failed: {str(e)}'}), 500
-
-
-@proxy_bp.route('/proxy', methods=['GET'])
-def shopify_proxy_root():
-    return jsonify({"success": True, "wishlist": []})
+        return _json_error(f'remove_failed: {str(e)}', 500)
