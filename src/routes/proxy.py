@@ -1,5 +1,6 @@
 # src/routes/proxy.py
 from flask import Blueprint, request, jsonify
+from sqlalchemy.exc import IntegrityError
 from src.models.wishlist import db, Wishlist, WishlistSettings
 from src.utils.shopify_api import ShopifyAPI
 
@@ -15,10 +16,10 @@ def _json_body():
 def _shop_from_request():
     """
     Accept the shop from anywhere Shopify/the theme might send it:
-    - App proxy query (?shop=…)
-    - App proxy header (X-Shopify-Shop-Domain)
-    - Your theme/query usage (?shop_domain=…)
-    - JSON request body ({"shop_domain": …})
+    - ?shop=…  (Shopify App Proxy default)
+    - X-Shopify-Shop-Domain header
+    - ?shop_domain=…
+    - JSON body { "shop_domain": … }
     """
     return (
         request.args.get('shop')
@@ -27,19 +28,55 @@ def _shop_from_request():
         or _json_body().get('shop_domain')
     )
 
-def _json_error(msg, code=400):
-    return jsonify({'success': False, 'error': msg}), code
+def _json_error(msg, code=400, extra=None):
+    payload = {'success': False, 'error': msg}
+    if extra:
+        payload['detail'] = extra
+    return jsonify(payload), code
 
 def verify_proxy_request():
-    # Keep permissive during integration to avoid 401s while wiring.
-    # Tighten later with HMAC if desired.
+    # Keep permissive during integration; tighten with HMAC later.
     return True
+
+def _get_shop_settings(shop):
+    if not shop:
+        return None
+    return WishlistSettings.query.filter_by(shop_domain=shop).first()
+
+def _resolve_product_id(shop, variant_id):
+    """
+    Try to resolve a product_id from a variant_id using ShopifyAPI.
+    If we can't (no token or method not available), return None.
+    """
+    if not (shop and variant_id):
+        return None
+    settings = _get_shop_settings(shop)
+    if not settings or not getattr(settings, "access_token", None):
+        return None
+    try:
+        api = ShopifyAPI(shop, settings.access_token)
+        # Your ShopifyAPI class may expose get_variant() or a generic request.
+        # First try a dedicated method if it exists:
+        if hasattr(api, "get_variant"):
+            v = api.get_variant(str(variant_id))
+        else:
+            # Fallback: most wrappers expose a low-level GET
+            # Expected Shopify REST path: /admin/api/2023-10/variants/{id}.json
+            v = api.get(f"variants/{variant_id}")  # adjust if your wrapper uses full path
+        if not v:
+            return None
+        # Normalize payload shape (either {"variant": {...}} or {...})
+        variant_obj = v.get("variant", v)
+        pid = variant_obj.get("product_id")
+        return str(pid) if pid else None
+    except Exception:
+        # Don’t kill the flow; just fail open and return None.
+        return None
 
 
 # ─────────────────────────────
 # Widget JS (served via proxy) — NEVER block
-# Storefront loads:  /apps/wishlist/wishlist.js?shop=xxxx
-# Shopify forwards:  <app>/apps/wishlist/proxy/wishlist.js?shop=xxxx
+# /apps/wishlist/wishlist.js  → proxy →  /proxy/wishlist.js
 # ─────────────────────────────
 
 @proxy_bp.route('/proxy/wishlist.js', methods=['GET'])
@@ -75,18 +112,15 @@ def wishlist_js():
       WISHLIST_CONFIG.customerId = window.Shopify.customer.id;
       WISHLIST_CONFIG.isLoggedIn = true;
     }
-
     addWishlistButtons();
     updateWishlistCount();
   }
 
   // ---------- Button injection (Dawn PDP) ----------
   function addWishlistButtons() {
-    // Handle both <product-form> and plain <form> on Dawn
     var productForms = document.querySelectorAll('product-form form[action*="/cart/add"], form[action*="/cart/add"]');
     if (!productForms.length) {
-      // Sections can render async; retry once
-      setTimeout(addWishlistButtons, 500);
+      setTimeout(addWishlistButtons, 500); // sections load async; retry once
       return;
     }
     productForms.forEach(function (form) {
@@ -242,10 +276,12 @@ def proxy_wishlist():
         if not shop:
             return _json_error('missing shop', 400)
 
-        # Ensure the shop is configured
-        shop_settings = WishlistSettings.query.filter_by(shop_domain=shop).first()
+        # Ensure the shop is configured (needed for enrichment & variant->product resolution)
+        shop_settings = _get_shop_settings(shop)
         if not shop_settings:
-            return _json_error('Shop not configured', 400)
+            # We still allow basic reads/writes without enrichment,
+            # but variant->product resolution will be unavailable.
+            pass
 
         if request.method == 'GET':
             return _get_wishlist(shop)
@@ -304,11 +340,11 @@ def _get_wishlist(shop):
 
         # Optional enrichment with product data
         enriched = []
-        shop_settings = WishlistSettings.query.filter_by(shop_domain=shop).first()
+        settings = _get_shop_settings(shop)
         api = None
-        if shop_settings:
+        if settings and getattr(settings, "access_token", None):
             try:
-                api = ShopifyAPI(shop, shop_settings.access_token)
+                api = ShopifyAPI(shop, settings.access_token)
             except Exception:
                 api = None
 
@@ -335,12 +371,17 @@ def _add_to_wishlist(shop):
     product_id  = data.get('product_id')
     variant_id  = data.get('variant_id')
 
-    # Require customer_id and at least one of product_id or variant_id
     if not customer_id or not (product_id or variant_id):
         return _json_error('customer_id and product_id or variant_id are required', 400)
 
+    # If only variant_id came in, try to resolve product_id
+    if not product_id and variant_id:
+        resolved = _resolve_product_id(shop, variant_id)
+        if resolved:
+            product_id = resolved
+
     try:
-        # Prevent duplicates (match on provided keys)
+        # Prevent duplicates (match on actual stored values, including NULLs)
         q = Wishlist.query.filter_by(customer_id=str(customer_id), shop_domain=shop)
         if product_id:
             q = q.filter_by(product_id=str(product_id))
@@ -366,6 +407,10 @@ def _add_to_wishlist(shop):
 
         return jsonify({'success': True, 'message': 'Item added to wishlist', 'item': item.to_dict()})
 
+    except IntegrityError as ie:
+        db.session.rollback()
+        # If your table has NOT NULL on product_id, tell the caller explicitly:
+        return _json_error('db_integrity_failed: product_id may be required in your schema', 500, extra=str(ie))
     except Exception as e:
         db.session.rollback()
         return _json_error(f'add_failed: {str(e)}', 500)
@@ -377,7 +422,6 @@ def _remove_from_wishlist(shop):
     product_id  = data.get('product_id')
     variant_id  = data.get('variant_id')
 
-    # Require customer_id and at least one of product_id or variant_id
     if not customer_id or not (product_id or variant_id):
         return _json_error('customer_id and product_id or variant_id are required', 400)
 
