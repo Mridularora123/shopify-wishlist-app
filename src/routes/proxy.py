@@ -28,13 +28,19 @@ def wishlist_js():
 (function () {
   // --- Config (read any pre-set global, then publish) -----------------
   var PRE = (window.WISHLIST_CONFIG || {});
+  var CANDIDATE_ID =
+      PRE.customerId
+   || (typeof window.__CUSTOMER_ID__ !== "undefined" ? window.__CUSTOMER_ID__ : null)
+   || ((window.Shopify && window.Shopify.customer) ? window.Shopify.customer.id : null);
+
   var WISHLIST_CONFIG = {
     shop: PRE.shop || "__SHOP__",
     apiEndpoint: PRE.apiEndpoint || "/apps/wishlist",  // storefront base
-    customerId: PRE.customerId || ((window.Shopify && window.Shopify.customer) ? window.Shopify.customer.id : null),
-    isLoggedIn: PRE.isLoggedIn || !!(window.Shopify && window.Shopify.customer)
+    customerId: CANDIDATE_ID,
+    isLoggedIn: !!CANDIDATE_ID
   };
   window.WISHLIST_CONFIG = WISHLIST_CONFIG; // make global for theme overrides
+  console.log("[wishlist] boot config:", WISHLIST_CONFIG);
 
   // Initialize after DOM ready to allow theme override to run too
   if (document.readyState === "loading") {
