@@ -126,7 +126,7 @@ def wishlist_js():
     var payload = {{
       customer_id: WISHLIST_CONFIG.customerId,
       shop_domain: WISHLIST_CONFIG.shop,
-      product_id: String(productId)
+      variant_id: String(productId)
     }};
 
     fetch(url, {{
@@ -276,30 +276,35 @@ def add_to_wishlist_proxy(shop):
     product_id  = data.get('product_id')
     variant_id  = data.get('variant_id')
 
-    if not customer_id or not product_id:
-        return jsonify({'success': False, 'error': 'customer_id and product_id are required'}), 400
+    # Must have customer_id and at least one of product_id or variant_id
+    if not customer_id or not (product_id or variant_id):
+        return jsonify({'success': False, 'error': 'customer_id and product_id or variant_id are required'}), 400
 
     try:
-        existing = Wishlist.query.filter_by(
-            customer_id=str(customer_id),
-            shop_domain=shop,
-            product_id=str(product_id),
-            variant_id=str(variant_id) if variant_id else None
-        ).first()
+        # Build query to check if item exists
+        q = Wishlist.query.filter_by(customer_id=str(customer_id), shop_domain=shop)
+        if product_id:
+            q = q.filter_by(product_id=str(product_id))
+        if variant_id:
+            q = q.filter_by(variant_id=str(variant_id))
+        existing = q.first()
 
         if existing:
             return jsonify({'success': False, 'error': 'Item already in wishlist'}), 409
 
-        item = Wishlist(
+        # Create new wishlist item
+        wishlist_item = Wishlist(
             customer_id=str(customer_id),
             shop_domain=shop,
-            product_id=str(product_id),
+            product_id=str(product_id) if product_id else None,
             variant_id=str(variant_id) if variant_id else None
         )
-        db.session.add(item)
+
+        db.session.add(wishlist_item)
         db.session.commit()
 
         return jsonify({'success': True, 'message': 'Item added to wishlist'})
+
     except Exception as e:
         db.session.rollback()
         return jsonify({'success': False, 'error': f'add_failed: {str(e)}'}), 500
@@ -312,23 +317,27 @@ def remove_from_wishlist_proxy(shop):
     product_id  = data.get('product_id')
     variant_id  = data.get('variant_id')
 
-    if not customer_id or not product_id:
-        return jsonify({'success': False, 'error': 'customer_id and product_id are required'}), 400
+    # Must have customer_id and at least one of product_id or variant_id
+    if not customer_id or not (product_id or variant_id):
+        return jsonify({'success': False, 'error': 'customer_id and product_id or variant_id are required'}), 400
 
     try:
-        item = Wishlist.query.filter_by(
-            customer_id=str(customer_id),
-            shop_domain=shop,
-            product_id=str(product_id),
-            variant_id=str(variant_id) if variant_id else None
-        ).first()
+        # Build query dynamically
+        q = Wishlist.query.filter_by(customer_id=str(customer_id), shop_domain=shop)
+        if product_id:
+            q = q.filter_by(product_id=str(product_id))
+        if variant_id:
+            q = q.filter_by(variant_id=str(variant_id))
+        item = q.first()
 
         if not item:
             return jsonify({'success': False, 'error': 'Item not found'}), 404
 
         db.session.delete(item)
         db.session.commit()
+
         return jsonify({'success': True, 'message': 'Item removed from wishlist'})
+
     except Exception as e:
         db.session.rollback()
         return jsonify({'success': False, 'error': f'remove_failed: {str(e)}'}), 500
