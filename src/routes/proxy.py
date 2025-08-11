@@ -28,12 +28,13 @@ def wishlist_js():
     js_code = f"""
 (function() {{
   // --- Config -------------------------------------------------------
+  var PRE = (window.WISHLIST_CONFIG || {});
   var WISHLIST_CONFIG = {{
-    shop: '{shop}',
+    shop: PRE.shop || '{shop}',
     // IMPORTANT: Storefront calls /apps/wishlist/* (Shopify forwards to /proxy/* here)
-    apiEndpoint: '/apps/wishlist',
-    customerId: null,
-    isLoggedIn: false
+    apiEndpoint: PRE.apiEndpoint || '/apps/wishlist',
+    customerId: PRE.customerId || ((window.Shopify && window.Shopify.customer) ? window.Shopify.customer.id : null),
+    isLoggedIn: PRE.isLoggedIn || !!(window.Shopify && window.Shopify.customer)
   }};
 
   // Init
