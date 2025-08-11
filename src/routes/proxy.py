@@ -29,7 +29,7 @@ def wishlist_js():
     // Wishlist Widget Configuration
     var WISHLIST_CONFIG = {{
         shop: '{shop}',
-        apiEndpoint: '/apps/wishlist/proxy',
+        apiEndpoint: '/apps/wishlist',
         customerId: null,
         isLoggedIn: false
     }};
@@ -57,7 +57,7 @@ def wishlist_js():
     
     function addWishlistButtons() {{
         // Find product forms or product containers
-        var productForms = document.querySelectorAll('form[action*="/cart/add"], .product-item, .product-card');
+        var productForms = document.querySelectorAll('form[action*="/cart/add"]');
         
         productForms.forEach(function(form) {{
             var productId = getProductId(form);
